@@ -40,9 +40,10 @@ const server = http.createServer(async (req, res) => {
         return;
     }
     
-    // Proxy endpoint: /proxy?url=VIDEO_URL
+    // Proxy endpoint: /proxy?url=VIDEO_URL&download=true
     if (pathname === '/proxy') {
         const videoUrl = parsedUrl.query.url;
+        const isDownload = parsedUrl.query.download === 'true';
         
         if (!videoUrl) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -50,10 +51,10 @@ const server = http.createServer(async (req, res) => {
             return;
         }
         
-        console.log(`\n🎬 Proxying: ${videoUrl}`);
+        console.log(`\n🎬 Proxying: ${videoUrl} ${isDownload ? '(Download Mode)' : ''}`);
         
         try {
-            await proxyVideo(videoUrl, req, res);
+            await proxyVideo(videoUrl, req, res, isDownload);
         } catch (error) {
             console.error('❌ Proxy error:', error.message);
             // Only send error if headers haven't been sent
@@ -96,7 +97,7 @@ const server = http.createServer(async (req, res) => {
     });
 });
 
-function proxyVideo(videoUrl, clientReq, clientRes) {
+function proxyVideo(videoUrl, clientReq, clientRes, isDownload = false) {
     return new Promise((resolve, reject) => {
         const parsedUrl = url.parse(videoUrl);
         const protocol = parsedUrl.protocol === 'https:' ? https : http;
@@ -126,8 +127,6 @@ function proxyVideo(videoUrl, clientReq, clientRes) {
         };
         
         const proxyReq = protocol.request(options, (proxyRes) => {
-            console.log(`📥 Response: ${proxyRes.statusCode}`);
-            
             // Handle redirects
             if (proxyRes.statusCode >= 300 && proxyRes.statusCode < 400 && proxyRes.headers.location) {
                 let redirectUrl = proxyRes.headers.location;
@@ -136,7 +135,7 @@ function proxyVideo(videoUrl, clientReq, clientRes) {
                     redirectUrl = `${parsedUrl.protocol}//${parsedUrl.hostname}${redirectUrl}`;
                 }
                 console.log(`🔄 Redirect: ${redirectUrl}`);
-                proxyVideo(redirectUrl, clientReq, clientRes)
+                proxyVideo(redirectUrl, clientReq, clientRes, isDownload)
                     .then(resolve)
                     .catch(reject);
                 return;
@@ -156,6 +155,21 @@ function proxyVideo(videoUrl, clientReq, clientRes) {
             if (proxyRes.headers['content-range']) {
                 responseHeaders['Content-Range'] = proxyRes.headers['content-range'];
             }
+
+            // Force download if requested
+            if (isDownload) {
+                // Try to guess filename from URL
+                let filename = 'video.mp4';
+                try {
+                    const pathParts = parsedUrl.pathname.split('/');
+                    const lastPart = pathParts[pathParts.length - 1];
+                    if (lastPart && (lastPart.endsWith('.mp4') || lastPart.endsWith('.webm') || lastPart.endsWith('.mkv'))) {
+                        filename = lastPart;
+                    }
+                } catch (e) {}
+                
+                responseHeaders['Content-Disposition'] = `attachment; filename="${filename}"`;
+            }
             
             // Use appropriate status code
             const statusCode = proxyRes.statusCode;
@@ -168,7 +182,6 @@ function proxyVideo(videoUrl, clientReq, clientRes) {
             proxyRes.pipe(clientRes);
             
             proxyRes.on('end', () => {
-                console.log('✅ Done');
                 resolve();
             });
             
